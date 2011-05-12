@@ -14,7 +14,7 @@ class MF:
 
     def connect(self):
         '''Connects to Monkey Farm'''
-        config = get_connection(con_name='rackspace')
+        config = get_connection(con_name='default')
         if config:
             rh = MFAPIKeyRequestHandler(config['url'])
             rh.auth(config['user'], config['api_key'])
@@ -30,9 +30,10 @@ class MF:
         builds = request['data']['tag']['builds']
         return builds
 
-    def build(self, build):
+    def build(self, builds):
         package = {}
-        package[build] = hub.build.get_one(build, 'ius')
+        for build in builds:
+            package[build] = hub.build.get_one(build, 'ius')
         return package
 
     def packages(self, packages):
@@ -54,15 +55,19 @@ class MF:
             tag = packages[package]['data']['build']['tags']
 
             # Create dictionary space for package
-            pkginfo[package] = {}
+            try:
+                pkginfo[owner][package] = {}
+            except KeyError:
+                pkginfo[owner] = {}
+                pkginfo[owner][package] = {}
 
             # Create a new Dictionary with our information
-            pkginfo[package]['owner'] = owner
-            pkginfo[package]['status'] = status
-            pkginfo[package]['update_date'] = update_date
-            pkginfo[package]['release'] = release
-            pkginfo[package]['tag'] = tag
-            pkginfo[package]['date'] = date
+            pkginfo[owner][package]['owner'] = owner
+            pkginfo[owner][package]['status'] = status
+            pkginfo[owner][package]['update_date'] = update_date
+            pkginfo[owner][package]['release'] = release
+            pkginfo[owner][package]['tag'] = tag
+            pkginfo[owner][package]['date'] = date
         return pkginfo
 
 
@@ -83,56 +88,60 @@ now = mf.now
 hub = mf.connect()
 builds = mf.tag('testing')
 
-# For each package get data info
-for build in builds:
-    package = mf.build(build)
-    pkginfo = mf.packages(package)
+# get data for all packages
+packages = mf.build(builds)
+pkginfo = mf.packages(packages)
 
-    # Packages Age
-    for package in pkginfo:
-        delta = (now - pkginfo[package]['date'])
+# Packages Age
+for owner in pkginfo:
+    
+    # Create our Email structure
+    fromaddr = 'ius-community@lists.launchpad.net'
+    toaddr = mf.getemail(owner)
+    subject = '[MonkeyFarm] Builds in testing for 2 weeks or more'
+
+    header = 'From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n' % (
+                                fromaddr, toaddr, subject
+                                )
+
+    body = ''
+
+    for package in pkginfo[owner]:
+
+        delta = (now - pkginfo[owner][package]['date'])
         days = delta.days
 
         # Only packages 14 days or older
         if delta >= timedelta(days = 14):
 
-            # Create our Email structure
-            fromaddr = 'ius-community@lists.launchpad.net'
-            toaddr = mf.getemail(pkginfo[package]['owner'])
-            subject = '[MonkeyFarm] Build: ' + build
+            body = body + 'Build: %s\nDate: %s\nStatus: %s\nReleases: %s\nTags: %s\nAge: %s\r\n\r\n' % (
+                            package, 
+                            pkginfo[owner][package]['update_date'], 
+                            pkginfo[owner][package]['status'], 
+                            ', '.join(pkginfo[owner][package]['release']), 
+                            ', '.join(pkginfo[owner][package]['tag']), 
+                            days
+                             )
 
-            header = 'From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n' % (
-                                        fromaddr, toaddr, subject
-                                        )
+    msg = header + body
 
-            body = 'Build: %s\nDate: %s\nStatus: %s\nReleases: %s\nTags: %s\nAge: %s\r\n\r\n' % (
-                                build, 
-                                pkginfo[package]['update_date'], 
-                                pkginfo[package]['status'], 
-                                ', '.join(pkginfo[package]['release']), 
-                                ', '.join(pkginfo[package]['tag']), 
-                                days
-                                 )
+    # To email or not to email..
+    if args.email:
+        # Try to connect to local SMTP and send email
+        try:
+            server = SMTP('localhost')
+            server.set_debuglevel(0)
 
-            msg = header + body
+        except error:
+            print 'Unable to connect to SMTP Server, quitting...\n'
+            sys.exit()
 
-            # To email or not to email..
-            if args.email:
-                # Try to connect to local SMTP and send email
-                try:
-                    server = SMTP('localhost')
-                    server.set_debuglevel(0)
-
-                except error:
-                    print 'Unable to connect to SMTP Server, quitting...\n'
-                    sys.exit()
-
-                else:
-                    server.sendmail(fromaddr, toaddr, msg)
-                    server.quit()
-                    print 'Email for', build, 'sent to', toaddr
-            else:
-                print '='*35
-                print msg
+        else:
+            server.sendmail(fromaddr, toaddr, msg)
+            server.quit()
+            print 'Email for sent to', toaddr
+    else:
+        print '='*35
+        print msg
 
 
